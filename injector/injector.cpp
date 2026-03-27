@@ -611,6 +611,16 @@ static int do_inject(pid_t pid, const char *so_path, const char *pkg_name,
   }
   LOGI("dlopen succeeded, handle=%p", (void *)handle);
 
+  // Setup trace directory from root context
+  if (pkg_name && num_tr > 0) {
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+             "mkdir -p /data/local/tmp/trace/%s && chmod -R 777 "
+             "/data/local/tmp/trace",
+             pkg_name);
+    system(cmd);
+  }
+
   // Helper lambda: dlsym a symbol from the injected .so
   auto remote_resolve = [&](const char *sym_name) -> uint64_t {
     ptrace_write(pid, (uintptr_t)remote_buf, sym_name, strlen(sym_name) + 1);

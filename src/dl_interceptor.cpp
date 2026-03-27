@@ -1008,49 +1008,63 @@ static void di_init_entry_wrapper(void) {
     DI_LOGI("       symbol: %s", sym);
 
   bool trace_active = false;
-  void (*gumtrace_unrun)() = nullptr;
+  static void *gum_handle = nullptr;
+  static void (*gumtrace_init)(const char *, const char *, int, void *) =
+      nullptr;
+  static void (*gumtrace_run)() = nullptr;
+  static void (*gumtrace_unrun)() = nullptr;
 
   if (ctx->is_tracepoint) {
-    void *gum_handle =
-        dlopen("/data/local/tmp/libGumTrace.so", RTLD_NOW | RTLD_GLOBAL);
-    if (gum_handle) {
-      auto gumtrace_init = (void (*)(const char *, const char *, int,
-                                     void *))dlsym(gum_handle, "init");
-      auto gumtrace_run = (void (*)())dlsym(gum_handle, "run");
-      gumtrace_unrun = (void (*)())dlsym(gum_handle, "unrun");
+    if (!gum_handle) {
+      gum_handle =
+          dlopen("/data/local/tmp/libGumTrace.so", RTLD_NOW | RTLD_GLOBAL);
+      if (gum_handle) {
+        gumtrace_init = (void (*)(const char *, const char *, int,
+                                  void *))dlsym(gum_handle, "init");
+        gumtrace_run = (void (*)())dlsym(gum_handle, "run");
+        gumtrace_unrun = (void (*)())dlsym(gum_handle, "unrun");
+      }
+    }
 
-      if (gumtrace_init && gumtrace_run && gumtrace_unrun) {
-        const char *short_name = strrchr(ctx->lib_name, '/');
-        short_name = short_name ? short_name + 1 : ctx->lib_name;
+    if (gum_handle && gumtrace_init && gumtrace_run && gumtrace_unrun) {
+      const char *short_name = strrchr(ctx->lib_name, '/');
+      short_name = short_name ? short_name + 1 : ctx->lib_name;
 
-        char target_lib_name[128];
-        snprintf(target_lib_name, sizeof(target_lib_name), "%s", short_name);
-        char *dot = strrchr(target_lib_name, '.');
-        if (dot)
-          *dot = '\0'; // remote .so
+      char target_lib_name[128];
+      snprintf(target_lib_name, sizeof(target_lib_name), "%s", short_name);
+      char *dot = strrchr(target_lib_name, '.');
+      if (dot)
+        *dot = '\0'; // remote .so
 
-        char dir_path[256];
-        snprintf(dir_path, sizeof(dir_path), "/data/local/tmp/trace");
-        mkdir(dir_path, 0777);
-        snprintf(dir_path, sizeof(dir_path), "/data/local/tmp/trace/%s",
-                 g_pkg_name);
-        mkdir(dir_path, 0777);
+      char dir_path[256];
+      snprintf(dir_path, sizeof(dir_path), "/data/local/tmp/trace");
+      if (mkdir(dir_path, 0777) < 0 && errno != EEXIST) {
+        DI_LOGE("  >>> TRACE FAILED: Cannot create dir %s (errno %d)", dir_path,
+                errno);
+      }
+      snprintf(dir_path, sizeof(dir_path), "/data/local/tmp/trace/%s",
+               g_pkg_name);
+      if (mkdir(dir_path, 0777) < 0 && errno != EEXIST) {
+        DI_LOGE("  >>> TRACE FAILED: Cannot create dir %s (errno %d)", dir_path,
+                errno);
+      }
 
-        char log_path[512];
-        snprintf(log_path, sizeof(log_path), "%s/%s_%zu_0x%" PRIxPTR ".log",
-                 dir_path, target_lib_name, disp_idx, (uintptr_t)ctx->func_rel);
+      char log_path[512];
+      snprintf(log_path, sizeof(log_path), "%s/%s_%zu_0x%" PRIxPTR ".log",
+               dir_path, target_lib_name, disp_idx, (uintptr_t)ctx->func_rel);
 
-        uint64_t options = 0; // Stand mode
-        gumtrace_init(ctx->lib_name, log_path, 0, &options);
-        gumtrace_run();
-        trace_active = true;
-        DI_LOGI("  >>> TRACE STARTED: output to %s", log_path);
+      uint64_t options = 0; // Stand mode
+      gumtrace_init(ctx->lib_name, log_path, 0, &options);
+      gumtrace_run();
+      trace_active = true;
+      DI_LOGI("  >>> TRACE STARTED: output to %s", log_path);
+    } else {
+      if (!gum_handle) {
+        DI_LOGE("  >>> TRACE FAILED: Failed to load libGumTrace.so: %s",
+                dlerror());
       } else {
         DI_LOGE("  >>> TRACE FAILED: Missing symbols in libGumTrace.so");
       }
-    } else {
-      DI_LOGE("  >>> TRACE FAILED: Failed to load libGumTrace.so: %s",
-              dlerror());
     }
   }
 
