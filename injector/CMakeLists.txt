@@ -30,8 +30,13 @@ execute_process(
         ${DI_NOTHING_SO} embedded_nothing_so ${GEN_DIR}/embedded_nothing.h
     RESULT_VARIABLE rc2
 )
-if(NOT rc1 EQUAL 0 OR NOT rc2 EQUAL 0)
-    message(FATAL_ERROR "bin2hex.py failed (rc1=${rc1}, rc2=${rc2})")
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/bin2hex.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/trace/prebuilt/libGumTrace.so embedded_gumtrace_so ${GEN_DIR}/embedded_gumtrace.h
+    RESULT_VARIABLE rc3
+)
+if(NOT rc1 EQUAL 0 OR NOT rc2 EQUAL 0 OR NOT rc3 EQUAL 0)
+    message(FATAL_ERROR "bin2hex.py failed (rc1=${rc1}, rc2=${rc2}, rc3=${rc3})")
 endif()
 
 # ---------------------------------------------------------------------------

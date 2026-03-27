@@ -1,0 +1,174 @@
+//------------------------------------------------
+// TaintTracker.1sc - 010 Editor Taint Tracking Plugin
+//------------------------------------------------
+
+string TAINT_TRACKER_PATH = "/Users/lidongyooo/repositories/GumTrace/src/taint/build/taint_tracker";
+string OUTPUT_DIR = "/Users/lidongyooo/repositories/GumTrace/src/taint/build/";
+
+//================================================
+// 辅助函数
+//================================================
+
+int64 FindLineStart(int64 cursorPos) {
+    if (cursorPos <= 0) return 0;
+    int64 pos = cursorPos - 1;
+    while (pos > 0) {
+        if (ReadByte(pos) == 0x0A)
+            return pos + 1;
+        pos--;
+    }
+    return 0;
+}
+
+int ComputeLineNumber(int64 lineStartPos) {
+    int lineNum = 1;
+    local int64 chunkSize = 65536;
+    local int64 pos = 0;
+    local uchar buf[65536];
+    local int64 remaining;
+    local int64 toRead;
+    local int64 i;
+    while (pos < lineStartPos) {
+        remaining = lineStartPos - pos;
+        toRead = (remaining < chunkSize) ? remaining : chunkSize;
+        ReadBytes(buf, pos, toRead);
+        for (i = 0; i < toRead; i++) {
+            if (buf[i] == 0x0A)
+                lineNum++;
+        }
+        pos += toRead;
+    }
+    return lineNum;
+}
+
+int64 FindLineEnd(int64 lineStart) {
+    int64 pos = lineStart;
+    int64 size = FileSize();
+    local uchar b;
+    while (pos < size) {
+        b = ReadByte(pos);
+        if (b == 0x0A || b == 0x0D)
+            return pos;
+        pos++;
+    }
+    return size;
+}
+
+
+string ReadLineText(int64 lineStart, int64 lineEnd) {
+    int64 len = lineEnd - lineStart;
+    if (len <= 0) return "";
+    if (len > 4096) len = 4096;
+    return ReadString(lineStart, len);
+}
+
+string ExtractFirstReg(string line) {
+    int lineLen = Strlen(line);
+    if (lineLen == 0 || line[0] != '[') return "x0";
+    int i = 1;
+    while (i < lineLen && line[i] != ']') i++;
+    if (i >= lineLen) return "x0";
+    i++;
+    while (i < lineLen && line[i] == ' ') i++;
+    while (i < lineLen && line[i] != ' ') i++;
+    while (i < lineLen && line[i] == ' ') i++;
+    while (i < lineLen && line[i] != ' ' && line[i] != '\t') i++;
+    while (i < lineLen && line[i] == ' ') i++;
+    if (i >= lineLen) return "x0";
+    int start = i;
+    local char c;
+    while (i < lineLen) {
+        c = line[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9'))
+            i++;
+        else
+            break;
+    }
+    if (i == start) return "x0";
+    string tok = SubStr(line, start, i - start);
+    if (Strlen(tok) >= 2) {
+        char first = tok[0];
+        if (first == 'x' || first == 'w' || first == 'X' || first == 'W' ||
+            first == 'q' || first == 'd' || first == 's' ||
+            first == 'Q' || first == 'D' || first == 'S')
+            return tok;
+        if (tok == "sp" || tok == "fp" || tok == "lr" || tok == "xzr" || tok == "wzr")
+            return tok;
+    }
+    return "x0";
+}
+
+//================================================
+// 主逻辑
+//================================================
+
+if (FileCount() == 0 || FileSize() == 0) {
+    MessageBox(idOk, "Taint Tracker", "请先打开一个 trace log 文件。");
+    return;
+}
+
+// 先保存输入文件名
+string inputFile = GetFileName();
+
+int64 cursorPos = GetCursorPos();
+int64 lineStart = FindLineStart(cursorPos);
+int64 lineEnd = FindLineEnd(lineStart);
+string currentLine = ReadLineText(lineStart, lineEnd);
+
+if (Strlen(currentLine) == 0 || currentLine[0] != '[') {
+    MessageBox(idOk, "Taint Tracker", "请将光标移到一条 trace 指令行上（以 [ 开头）。");
+    return;
+}
+
+string defaultTarget = ExtractFirstReg(currentLine);
+
+// === 弹窗 1：方向（默认反向） ===
+int direction = InputRadioButtonBox(
+    "Taint Tracker",
+    "选择追踪方向：",
+    1,
+    "Forward（正向追踪）",
+    "Backward（反向追踪）"
+);
+if (direction < 0) return;
+
+// === 弹窗 2：目标（默认第一个寄存器） ===
+string target = InputString(
+    "Taint Tracker",
+    "输入追踪目标（寄存器如 x0 或内存如 mem:0x1000）：",
+    defaultTarget
+);
+if (Strlen(target) == 0) return;
+
+// === 输出文件名：偏移-方向-目标.log ===
+string dirStr = (direction == 0) ? "forward" : "backward";
+string outputFile;
+SPrintf(outputFile, "%s%Ld-%s-%s.log", OUTPUT_DIR, lineStart, dirStr, target);
+
+// 如果输出文件已在 010 Editor 中打开，先关闭以允许覆盖
+local int fi;
+local string fname;
+for (fi = FileCount() - 1; fi >= 0; fi--) {
+    FileSelect(fi);
+    fname = GetFileName();
+    if (fname == outputFile) {
+        FileClose();
+        break;
+    }
+}
+
+// === 构建命令并执行 ===
+string dirFlag = (direction == 0) ? "-f" : "-b";
+string cmd;
+SPrintf(cmd, "'%s' -i '%s' -o '%s' %s %s -p %Ld",
+    TAINT_TRACKER_PATH, inputFile, outputFile, dirFlag, target, lineStart);
+
+Printf("[Taint] %s\n", cmd);
+Exec("/bin/sh", "-c \"" + cmd + "\"", 1);
+
+if (FileOpen(outputFile) < 0) {
+    MessageBox(idOk, "Taint Tracker", "执行失败，结果文件未生成。\n命令：" + cmd);
+    return;
+}
+Printf("[Taint] 完成！\n");

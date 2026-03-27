@@ -39,6 +39,9 @@ typedef void (*dl_interceptor_callback_t)(struct dl_phdr_info *info,
 // Can be called multiple times safely (only initializes once).
 DI_EXPORT int dl_interceptor_init(void);
 
+// Set the package name for the current mission (used for logging directories).
+DI_EXPORT void dl_interceptor_set_package_name(const char *pkg_name);
+
 // Register callbacks for ELF .init + .init_array execution.
 //   pre  - called AFTER ELF is mapped+relocated, BEFORE .init/.init_array runs
 //   (may be NULL) post - called AFTER .init/.init_array finishes (may be NULL)
@@ -164,6 +167,21 @@ DI_EXPORT int dl_interceptor_set_hookpoint(const char *lib_name);
 
 // Clear all hook points.
 DI_EXPORT void dl_interceptor_clear_hookpoints(void);
+
+// ---------------------------------------------------------------------------
+// Trace execution with GumTrace
+// ---------------------------------------------------------------------------
+
+// Trace a specific init_array entry using GumTrace.
+//
+//   lib_name - library name to match
+//   index    - 1-based index into .init_array (-1 = trace ALL entries)
+//
+// Returns 0 on success, -1 on failure.
+DI_EXPORT int dl_interceptor_set_tracepoint(const char *lib_name, int index);
+
+// Clear all trace points.
+DI_EXPORT void dl_interceptor_clear_tracepoints(void);
 
 #ifdef __cplusplus
 }

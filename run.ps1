@@ -146,6 +146,13 @@ if (-not $passArgs) {
 }
 
 Write-Host ""
+Write-Host ">>> clearing logcat..." -ForegroundColor DarkGray
+if ($Device.Method -eq "ssh") {
+    & ssh $Device.Target "logcat -c" 2>&1 | Out-Null
+} else {
+    & adb logcat -c 2>&1 | Out-Null
+}
+
 Write-Host ">>> di_injector $passArgs" -ForegroundColor Cyan
 Write-Host ""
 

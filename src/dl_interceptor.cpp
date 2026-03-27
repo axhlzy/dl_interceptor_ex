@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <time.h>
 #include <unistd.h>
@@ -888,6 +889,8 @@ struct di_breakpoint {
 static di_breakpoint g_breakpoints[DI_MAX_BREAKPOINTS];
 static di_breakpoint g_dumppoints[DI_MAX_BREAKPOINTS];
 static di_breakpoint g_hookpoints[DI_MAX_BREAKPOINTS];
+static di_breakpoint g_tracepoints[DI_MAX_BREAKPOINTS];
+static char g_pkg_name[128] = "unknown";
 static pthread_mutex_t g_bp_lock = PTHREAD_MUTEX_INITIALIZER;
 
 // Wrapper context table — stores per-entry info for the wrapper functions.
@@ -904,6 +907,7 @@ struct di_wrapper_ctx {
   ElfW(Addr) func_rel;
   bool is_breakpoint;
   bool is_dumppoint;
+  bool is_tracepoint;
   // phdr info for dump
   const ElfW(Phdr) * phdr;
   ElfW(Half) phnum;
@@ -1003,6 +1007,53 @@ static void di_init_entry_wrapper(void) {
   if (sym)
     DI_LOGI("       symbol: %s", sym);
 
+  bool trace_active = false;
+  void (*gumtrace_unrun)() = nullptr;
+
+  if (ctx->is_tracepoint) {
+    void *gum_handle =
+        dlopen("/data/local/tmp/libGumTrace.so", RTLD_NOW | RTLD_GLOBAL);
+    if (gum_handle) {
+      auto gumtrace_init = (void (*)(const char *, const char *, int,
+                                     void *))dlsym(gum_handle, "init");
+      auto gumtrace_run = (void (*)())dlsym(gum_handle, "run");
+      gumtrace_unrun = (void (*)())dlsym(gum_handle, "unrun");
+
+      if (gumtrace_init && gumtrace_run && gumtrace_unrun) {
+        const char *short_name = strrchr(ctx->lib_name, '/');
+        short_name = short_name ? short_name + 1 : ctx->lib_name;
+
+        char target_lib_name[128];
+        snprintf(target_lib_name, sizeof(target_lib_name), "%s", short_name);
+        char *dot = strrchr(target_lib_name, '.');
+        if (dot)
+          *dot = '\0'; // remote .so
+
+        char dir_path[256];
+        snprintf(dir_path, sizeof(dir_path), "/data/local/tmp/trace");
+        mkdir(dir_path, 0777);
+        snprintf(dir_path, sizeof(dir_path), "/data/local/tmp/trace/%s",
+                 g_pkg_name);
+        mkdir(dir_path, 0777);
+
+        char log_path[512];
+        snprintf(log_path, sizeof(log_path), "%s/%s_%zu_0x%" PRIxPTR ".log",
+                 dir_path, target_lib_name, disp_idx, (uintptr_t)ctx->func_rel);
+
+        uint64_t options = 0; // Stand mode
+        gumtrace_init(ctx->lib_name, log_path, 0, &options);
+        gumtrace_run();
+        trace_active = true;
+        DI_LOGI("  >>> TRACE STARTED: output to %s", log_path);
+      } else {
+        DI_LOGE("  >>> TRACE FAILED: Missing symbols in libGumTrace.so");
+      }
+    } else {
+      DI_LOGE("  >>> TRACE FAILED: Failed to load libGumTrace.so: %s",
+              dlerror());
+    }
+  }
+
   if (ctx->orig_func) {
     struct timespec start_ts, end_ts;
     clock_gettime(CLOCK_MONOTONIC, &start_ts);
@@ -1017,6 +1068,11 @@ static void di_init_entry_wrapper(void) {
             elapsed_ms);
   } else {
     DI_LOGI("  done init_array[%zu/%zu]", disp_idx, disp_total);
+  }
+
+  if (trace_active && gumtrace_unrun) {
+    gumtrace_unrun();
+    DI_LOGI("  >>> TRACE STOPPED");
   }
 }
 
@@ -1036,6 +1092,11 @@ static bool di_has_breakpoint_for_lib(const char *lib_name) {
     if (g_hookpoints[i].active &&
         (strcmp(g_hookpoints[i].lib_name, "all") == 0 ||
          strstr(lib_name, g_hookpoints[i].lib_name) != nullptr)) {
+      pthread_mutex_unlock(&g_bp_lock);
+      return true;
+    }
+    if (g_tracepoints[i].active &&
+        strstr(lib_name, g_tracepoints[i].lib_name) != nullptr) {
       pthread_mutex_unlock(&g_bp_lock);
       return true;
     }
@@ -1077,6 +1138,23 @@ static bool di_dumppoint_matches(const char *lib_name, size_t index) {
   return false;
 }
 
+static bool di_tracepoint_matches(const char *lib_name, size_t index) {
+  pthread_mutex_lock(&g_bp_lock);
+  for (int i = 0; i < DI_MAX_BREAKPOINTS; i++) {
+    if (!g_tracepoints[i].active)
+      continue;
+    if (strstr(lib_name, g_tracepoints[i].lib_name) != nullptr) {
+      if (g_tracepoints[i].index == -1 ||
+          g_tracepoints[i].index == (int)index) {
+        pthread_mutex_unlock(&g_bp_lock);
+        return true;
+      }
+    }
+  }
+  pthread_mutex_unlock(&g_bp_lock);
+  return false;
+}
+
 static dl_interceptor_init_func_t
 di_breakpoint_hook(const struct dl_interceptor_array_entry *entry, void *data) {
   (void)data;
@@ -1098,6 +1176,7 @@ di_breakpoint_hook(const struct dl_interceptor_array_entry *entry, void *data) {
     ctx->func_rel = entry->func_rel;
     ctx->is_breakpoint = di_breakpoint_matches(entry->lib_name, entry->index);
     ctx->is_dumppoint = di_dumppoint_matches(entry->lib_name, entry->index);
+    ctx->is_tracepoint = di_tracepoint_matches(entry->lib_name, entry->index);
     ctx->phdr = g_current_phdr;
     ctx->phnum = g_current_phnum;
 
@@ -1254,4 +1333,53 @@ void dl_interceptor_clear_hookpoints(void) {
     g_hookpoints[i].active = false;
   pthread_mutex_unlock(&g_bp_lock);
   DI_LOGI("hookpoint: all hookpoints cleared");
+}
+
+int dl_interceptor_set_tracepoint(const char *lib_name, int index) {
+  if (!lib_name)
+    return -1;
+
+  pthread_mutex_lock(&g_bp_lock);
+  int slot = -1;
+  for (int i = 0; i < DI_MAX_BREAKPOINTS; i++) {
+    if (!g_tracepoints[i].active) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) {
+    pthread_mutex_unlock(&g_bp_lock);
+    DI_LOGE("tracepoint: no free slots (max=%d)", DI_MAX_BREAKPOINTS);
+    return -1;
+  }
+  strncpy(g_tracepoints[slot].lib_name, lib_name,
+          sizeof(g_tracepoints[slot].lib_name) - 1);
+  g_tracepoints[slot].lib_name[sizeof(g_tracepoints[slot].lib_name) - 1] = '\0';
+  g_tracepoints[slot].index = (index <= 0) ? -1 : (index - 1);
+  g_tracepoints[slot].active = true;
+
+  static bool hook_registered_tr = false;
+  if (!hook_registered_tr) {
+    dl_interceptor_register_init_array_hook(di_breakpoint_hook, nullptr);
+    hook_registered_tr = true;
+  }
+  pthread_mutex_unlock(&g_bp_lock);
+
+  DI_LOGI("tracepoint: set on %s init_array[%d]", lib_name, index);
+  return 0;
+}
+
+void dl_interceptor_clear_tracepoints(void) {
+  pthread_mutex_lock(&g_bp_lock);
+  for (int i = 0; i < DI_MAX_BREAKPOINTS; i++)
+    g_tracepoints[i].active = false;
+  pthread_mutex_unlock(&g_bp_lock);
+  DI_LOGI("tracepoint: all tracepoints cleared");
+}
+
+void dl_interceptor_set_package_name(const char *pkg_name) {
+  if (pkg_name) {
+    strncpy(g_pkg_name, pkg_name, sizeof(g_pkg_name) - 1);
+    g_pkg_name[sizeof(g_pkg_name) - 1] = '\0';
+  }
 }
