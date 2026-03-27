@@ -38,6 +38,7 @@ di_injector [选项]
 选填:
   -b <lib:N>      在 init_array 处的指定条目设置断点 (基于 1 的索引，可指定多个)
   -d <lib:N>      在执行 init_array 指定条目时 Dump 对象内存 (基于 1，可指定多个)
+  -hk <lib>       Hook 并追踪属于特定库的所有 init_array 函数执行轨迹 (使用 'all' 来作用于所有库)
   -a <activity>   用于调起应用的 Activity 名 (默认: 自动检测)
   -t <timeout>    等待进程启动的超时时间 ms (默认: 10000)
   -n              注入到一个已在运行的进程中 (不重启进程)
@@ -60,6 +61,12 @@ di_injector -p com.example.app -d libfoo.so:1
 
 # 结合断点与 Dump 使用
 di_injector -p com.example.app -b libfoo.so:1 -d libfoo.so:1
+
+# Hook 特定的库的所有 init_array 条目以追踪执行
+di_injector -p com.example.app -hk libfoo.so
+
+# Hook 所有库的所有 init_array 条目
+di_injector -p com.example.app -hk all
 
 # 截获某个库的所有 init_array 条目断点
 di_injector -p com.example.app -b libfoo.so:*
@@ -138,6 +145,10 @@ void dl_interceptor_clear_breakpoints(void);
 // 设定内存 Dump 捕获点 (从 1 起始的索引用法)
 int dl_interceptor_set_dumppoint(lib_name, index);
 void dl_interceptor_clear_dumppoints(void);
+
+// Hook 特定库所有的 init_array 条目并追踪其执行
+int dl_interceptor_set_hookpoint(lib_name);
+void dl_interceptor_clear_hookpoints(void);
 ```
 
 ## 编译指南

@@ -38,6 +38,7 @@ Required:
 Optional:
   -b <lib:N>      Breakpoint on init_array entry (1-based index, repeatable)
   -d <lib:N>      Dump .so memory at init_array entry (1-based, repeatable)
+  -hk <lib>       Hook all init_array functions of a specific lib and trace execution (use 'all' for all libs)
   -a <activity>   Activity to launch (default: auto-detect)
   -t <timeout>    Timeout in ms for process spawn (default: 10000)
   -n              Inject into already running process (don't restart)
@@ -60,6 +61,12 @@ di_injector -p com.example.app -d libfoo.so:1
 
 # Breakpoint + dump combined
 di_injector -p com.example.app -b libfoo.so:1 -d libfoo.so:1
+
+# Hook all init_array entries of a library to trace execution
+di_injector -p com.example.app -hk libfoo.so
+
+# Hook all init_array entries for ALL libraries
+di_injector -p com.example.app -hk all
 
 # Break on ALL init_array entries of a library
 di_injector -p com.example.app -b libfoo.so:*
@@ -138,6 +145,10 @@ void dl_interceptor_clear_breakpoints(void);
 // Dump .so memory at init_array entry (1-based index)
 int dl_interceptor_set_dumppoint(lib_name, index);
 void dl_interceptor_clear_dumppoints(void);
+
+// Hook all init_array entries of a library and trace execution
+int dl_interceptor_set_hookpoint(lib_name);
+void dl_interceptor_clear_hookpoints(void);
 ```
 
 ## Building
