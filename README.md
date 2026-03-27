@@ -13,7 +13,8 @@ Provides **pre** and **post** callbacks around constructor/destructor execution,
 - Symbol resolution via xDL (shows function names when available)
 - **Breakpoints** — SIGSTOP the process before any init_array entry
 - **Memory dump** — dump the .so after relocation at any init_array entry
-- **Init array hooks** — replace, skip, or wrap individual init functions
+- **GumTrace Support** — deep execution tracing for specific init functions using `libGumTrace.so`
+- **Init array hooks** — replace, skip, or wrap individual init functions with execution time measurement
 - Supports **armeabi-v7a**, **arm64-v8a**, **x86**, and **x86_64**
 - Supports Android 5.0–16 (API 21–36)
 - Runtime `soinfo` struct scanning — no hardcoded offsets, works across AOSP and vendor linkers
@@ -22,9 +23,8 @@ Provides **pre** and **post** callbacks around constructor/destructor execution,
 
 ## Quick Start
 
-```powershell
-# Auto-detects device architecture, builds, pushes, and injects into app (root required)
-./run.ps1 -p com.example.app
+# Auto-detects device architecture, builds, pushes, clears logcat, and injects into app
+./run.ps1 -p com.example.app -t libfk.so:1
 ```
 
 ## Injector Usage
@@ -39,8 +39,10 @@ Optional:
   -b <lib:N>      Breakpoint on init_array entry (1-based index, repeatable)
   -d <lib:N>      Dump .so memory at init_array entry (1-based, repeatable)
   -hk <lib>       Hook all init_array functions of a specific lib and trace execution (use 'all' for all libs)
+  -t <lib:N>      Trace a specific init_array execution using GumTrace (1-based, repeatable)
+                  Format: libname.so:N | libname.so:* | libname.so
   -a <activity>   Activity to launch (default: auto-detect)
-  -t <timeout>    Timeout in ms for process spawn (default: 10000)
+  -w <timeout>    Timeout in ms for process spawn (default: 10000)
   -n              Inject into already running process (don't restart)
   -h              Show help
 ```
@@ -67,6 +69,10 @@ di_injector -p com.example.app -hk libfoo.so
 
 # Hook all init_array entries for ALL libraries
 di_injector -p com.example.app -hk all
+
+# Trace libfoo.so's 1st init_array function using GumTrace
+di_injector -p com.example.app -t libfoo.so:1
+# Output: /data/local/tmp/trace/<pkg>/libfoo.so_1_0x<addr>.log
 
 # Break on ALL init_array entries of a library
 di_injector -p com.example.app -b libfoo.so:*
@@ -109,8 +115,9 @@ dlopen("libfoo.so")
 3. `ptrace(ATTACH)` to freeze the process
 4. Remote `mmap` + `dlopen` to load `libdl_interceptor.so`
 5. Remote `dlsym` + call `dl_interceptor_init()`
-6. Remote call `dl_interceptor_set_breakpoint()` / `dl_interceptor_set_dumppoint()` if requested
+6. Remote call `dl_interceptor_set_package_name()` and configuration functions (`set_breakpoint`, `set_tracepoint`, etc.)
 7. `ptrace(DETACH)` — process resumes with hooks active
+8. If tracing is active, `libGumTrace.so` is loaded in the target and logs to `/data/local/tmp/trace/`
 
 ### Offset Discovery
 
@@ -127,6 +134,9 @@ The library uses runtime memory scanning to discover `soinfo` struct field offse
 
 // Initialize (call once)
 int dl_interceptor_init(void);
+
+// Set package name (required for trace log directory naming)
+void dl_interceptor_set_package_name(const char *pkg_name);
 
 // Library load callbacks (pre = before .init, post = after .init_array)
 int dl_interceptor_register_dl_init_callback(pre, post, data);
@@ -147,8 +157,12 @@ int dl_interceptor_set_dumppoint(lib_name, index);
 void dl_interceptor_clear_dumppoints(void);
 
 // Hook all init_array entries of a library and trace execution
-int dl_interceptor_set_hookpoint(lib_name);
+int dl_interceptor_set_hookpoint(const char *lib_name);
 void dl_interceptor_clear_hookpoints(void);
+
+// Trace a specific init_array entry using GumTrace
+int dl_interceptor_set_tracepoint(const char *lib_name, int index);
+void dl_interceptor_clear_tracepoints(void);
 ```
 
 ## Building
@@ -241,6 +255,7 @@ The injector extracts its embedded `.so` files to `/data/local/tmp/` at runtime.
 ## Acknowledgements
 
 - **[xDL](https://github.com/hexhacking/xDL)**: The excellent symbol resolution library used for `soinfo` dynamic struct scanning and ELF parsing.
+- **[GumTrace](https://github.com/lidongyooo/GumTrace)**: The powerful execution tracing library (based on Frida Gum) integrated for deep function tracing.
 - **[aimardcr/dl_interceptor](https://github.com/aimardcr/dl_interceptor)**: The original project that inspired and provided foundational ideas for this tool.
 
 ## License
